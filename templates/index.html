@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recipe Chatbot</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="layout">
+
+    <!-- ── SIDEBAR ── -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="brand">🍳 Recipe AI</span>
+        <button id="newChatBtn" class="btn-new" title="New chat">＋ New Chat</button>
+      </div>
+      <div class="chat-list" id="chatList">
+        <!-- populated by JS -->
+      </div>
+    </aside>
+
+    <!-- ── MAIN PANEL ── -->
+    <div class="main">
+
+      <!-- Top bar -->
+      <header class="topbar">
+        <span class="chat-title-display" id="chatTitleDisplay">New Chat</span>
+        <div class="topbar-controls">
+
+          <!-- Memory selector -->
+          <label class="memory-label" for="memorySelect">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 1a6 6 0 1 1 0 12A6 6 0 0 1 8 2zm-.5 3v4.25l3.25 1.95.5-.83-2.75-1.65V5H7.5z"/>
+            </svg>
+            Memory
+          </label>
+          <select id="memorySelect" class="memory-select">
+            <option value="0">None</option>
+            <option value="2">Last 2 turns</option>
+            <option value="5" selected>Last 5 turns</option>
+            <option value="10">Last 10 turns</option>
+            <option value="-1">Full history</option>
+          </select>
+        </div>
+      </header>
+
+      <!-- System Prompt Block -->
+      <div class="system-prompt-wrapper">
+        <button class="system-prompt-toggle" id="toggleSysPrompt">
+          <span>⚙️ System Prompt</span>
+          <span class="toggle-arrow" id="toggleArrow">▼</span>
+        </button>
+        <div class="system-prompt-body" id="sysPromptBody">
+          <textarea id="systemPrompt" rows="4"
+            placeholder="Enter system instructions for the assistant..."
+          >{{ default_system_prompt }}</textarea>
+          <p class="sys-prompt-hint">Changes take effect on your next message.</p>
+        </div>
+      </div>
+
+      <!-- Chat Window -->
+      <div class="chat-window" id="chatWindow">
+        <div class="welcome-msg"><p>👨‍🍳 Ask me for any recipe or cooking tip!</p></div>
+      </div>
+
+      <!-- Input Bar -->
+      <div class="input-bar">
+        <input type="text" id="queryInput"
+          placeholder="E.g. How do I make pancakes?"
+          autocomplete="off" />
+        <button id="sendBtn" class="btn-send">Send</button>
+      </div>
+
+    </div><!-- /main -->
+  </div><!-- /layout -->
+
+  <script>
+    // ── State ──────────────────────────────────────────────────
+    let activeChatId = null;
+    // Local message cache: { chatId: [{role, text}] }
+    const localMessages = {};
+
+    // ── DOM refs ───────────────────────────────────────────────
+    const chatWindow      = document.getElementById('chatWindow');
+    const queryInput      = document.getElementById('queryInput');
+    const sendBtn         = document.getElementById('sendBtn');
+    const newChatBtn      = document.getElementById('newChatBtn');
+    const chatList        = document.getElementById('chatList');
+    const systemPrompt    = document.getElementById('systemPrompt');
+    const toggleBtn       = document.getElementById('toggleSysPrompt');
+    const sysPromptBody   = document.getElementById('sysPromptBody');
+    const toggleArrow     = document.getElementById('toggleArrow');
+    const memorySelect    = document.getElementById('memorySelect');
+    const chatTitleDisplay = document.getElementById('chatTitleDisplay');
+
+    // ── System prompt toggle ───────────────────────────────────
+    toggleBtn.addEventListener('click', () => {
+      const open = sysPromptBody.classList.toggle('open');
+      toggleArrow.textContent = open ? '▲' : '▼';
+    });
+
+    // ── Chat list helpers ──────────────────────────────────────
+    async function loadChatList() {
+      const res = await fetch('/chats');
+      const data = await res.json();
+      renderChatList(data.chats);
+    }
+
+    function renderChatList(chats) {
+      chatList.innerHTML = '';
+      if (!chats.length) {
+        chatList.innerHTML = '<p class="no-chats">No chats yet.</p>';
+        return;
+      }
+      // Newest first
+      [...chats].reverse().forEach(c => {
+        const item = document.createElement('div');
+        item.className = 'chat-item' + (c.id === activeChatId ? ' active' : '');
+        item.dataset.id = c.id;
+
+        const title = document.createElement('span');
+        title.className = 'chat-item-title';
+        title.textContent = c.title;
+
+        const del = document.createElement('button');
+        del.className = 'chat-item-delete';
+        del.title = 'Delete';
+        del.textContent = '×';
+        del.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          await fetch(`/chats/${c.id}`, { method: 'DELETE' });
+          delete localMessages[c.id];
+          if (activeChatId === c.id) {
+            activeChatId = null;
+            renderMessages([]);
+            chatTitleDisplay.textContent = '';
+          }
+          loadChatList();
+        });
+
+        item.appendChild(title);
+        item.appendChild(del);
+        item.addEventListener('click', () => switchChat(c.id, c.title));
+        chatList.appendChild(item);
+      });
+    }
+
+    function switchChat(id, title) {
+      activeChatId = id;
+      chatTitleDisplay.textContent = title;
+      renderMessages(localMessages[id] || []);
+      // Update active highlight
+      document.querySelectorAll('.chat-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.id === id);
+      });
+      queryInput.focus();
+    }
+
+    function renderMessages(msgs) {
+      if (!msgs.length) {
+        chatWindow.innerHTML = '<div class="welcome-msg"><p>👨‍🍳 Ask me for any recipe or cooking tip!</p></div>';
+        return;
+      }
+      chatWindow.innerHTML = '';
+      msgs.forEach(m => addBubble(m.role, m.text));
+    }
+
+    function addBubble(role, text) {
+      const welcome = chatWindow.querySelector('.welcome-msg');
+      if (welcome) welcome.remove();
+
+      const wrapper = document.createElement('div');
+      wrapper.classList.add('message', role === 'user' ? 'user-msg' : 'bot-msg');
+      const bubble = document.createElement('div');
+      bubble.classList.add('bubble');
+      bubble.textContent = text;
+      wrapper.appendChild(bubble);
+      chatWindow.appendChild(wrapper);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    // ── New chat ───────────────────────────────────────────────
+    newChatBtn.addEventListener('click', async () => {
+      const res = await fetch('/chats/new', { method: 'POST' });
+      const data = await res.json();
+      localMessages[data.id] = [];
+      await loadChatList();
+      switchChat(data.id, data.title);
+    });
+
+    // ── Typing indicator ───────────────────────────────────────
+    function showTyping() {
+      const wrapper = document.createElement('div');
+      wrapper.classList.add('message', 'bot-msg');
+      wrapper.id = 'typingIndicator';
+      const bubble = document.createElement('div');
+      bubble.classList.add('bubble', 'typing');
+      bubble.innerHTML = '<span></span><span></span><span></span>';
+      wrapper.appendChild(bubble);
+      chatWindow.appendChild(wrapper);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+    function removeTyping() {
+      const el = document.getElementById('typingIndicator');
+      if (el) el.remove();
+    }
+
+    // ── Send message ───────────────────────────────────────────
+    async function sendMessage() {
+      const query = queryInput.value.trim();
+      if (!query) return;
+
+      if (!activeChatId) {
+        // Auto-create a chat if none selected
+        const res = await fetch('/chats/new', { method: 'POST' });
+        const data = await res.json();
+        localMessages[data.id] = [];
+        await loadChatList();
+        switchChat(data.id, data.title);
+      }
+
+      addBubble('user', query);
+      if (!localMessages[activeChatId]) localMessages[activeChatId] = [];
+      localMessages[activeChatId].push({ role: 'user', text: query });
+
+      queryInput.value = '';
+      sendBtn.disabled = true;
+      queryInput.disabled = true;
+      showTyping();
+
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query,
+            system_prompt: systemPrompt.value.trim(),
+            chat_id: activeChatId,
+            memory_turns: parseInt(memorySelect.value)
+          })
+        });
+        const data = await res.json();
+        removeTyping();
+
+        if (data.error) {
+          addBubble('bot', '⚠️ ' + data.error);
+        } else {
+          addBubble('bot', data.response);
+          localMessages[activeChatId].push({ role: 'bot', text: data.response });
+          // Update title in sidebar if it was auto-set
+          if (data.title) {
+            chatTitleDisplay.textContent = data.title;
+            loadChatList();
+          }
+        }
+      } catch (e) {
+        removeTyping();
+        addBubble('bot', '⚠️ Network error. Please try again.');
+      } finally {
+        sendBtn.disabled = false;
+        queryInput.disabled = false;
+        queryInput.focus();
+      }
+    }
+
+    sendBtn.addEventListener('click', sendMessage);
+    queryInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) sendMessage();
+    });
+
+    // ── Init ───────────────────────────────────────────────────
+    (async () => {
+      await loadChatList();
+      // Auto-create first chat
+      const res = await fetch('/chats/new', { method: 'POST' });
+      const data = await res.json();
+      localMessages[data.id] = [];
+      await loadChatList();
+      switchChat(data.id, data.title);
+    })();
+  </script>
+</body>
+</html>
