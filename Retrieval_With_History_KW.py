@@ -93,7 +93,6 @@ def ask_RAG_completion(Query, chat_history, primer=primer):
 # ### Context History test
 
 # %%
-# Create a fresh code cell and run this:
 test_contexts, test_query = get_context("How to make pancakes?")
 
 print(f"Total recipes retrieved: {len(test_contexts)}")
@@ -113,7 +112,7 @@ mock_history = [
     {"role": "user", "content": "Pancakes sound great. Do you have a recipe?"}
 ]
 
-# Run your prompt compilation
+# Run prompt compilation
 compiled_prompt = augmented_query("Do you have a recipe?", mock_history)
 print(compiled_prompt)
 
@@ -148,6 +147,7 @@ turn_3_reply = ask_RAG_completion(turn_3_query, live_history)
 print("\n--- TURN 3 GUARDRAIL RESPONSE ---")
 print(turn_3_reply)
 
+### Initial Rag test prior to history integration
 # %%
 ask_RAG_completion("Give me a waffle recipe.", [])
 
