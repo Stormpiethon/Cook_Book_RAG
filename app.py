@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 sys.path.insert(0, os.path.dirname(__file__))
-from Retrieval_KW import ask_gpt_completions, augmented_query
+from Retrieval_With_History_KW import ask_gpt_completions, augmented_query
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
@@ -20,33 +20,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "'I can only provide answers regarding cooking recipes.'"
 )
 
-# { chat_id: { "title": str, "history": [{"role", "content", "display"}] } }
+# { chat_id: { "title": str, "history": [{"role": str, "content": str}] } }
 chat_store: dict[str, dict] = {}
-
-
-def get_user_chats(sid: str) -> list[str]:
-    """Return list of chat IDs belonging to this session (stored in session)."""
-    return session.get("chats", [])
-
-
-def ask_RAG_with_history(query: str, system_prompt: str, history: list, memory_turns: int) -> str:
-    augmented = augmented_query(query)
-
-    # Slice history to respect memory window (each turn = 1 user + 1 assistant msg)
-    if memory_turns == 0:
-        past_messages = []
-    elif memory_turns == -1:
-        past_messages = history  # all
-    else:
-        past_messages = history[-(memory_turns * 2):]
-
-    past_context = "\n".join(
-        f"{m['role'].upper()}: {m['display']}" for m in past_messages
-    )
-    user_prompt = (past_context + "\n\n" + augmented).strip() if past_context else augmented
-
-    response_text, _ = ask_gpt_completions(system_prompt, user_prompt, model="gpt-4.1")
-    return response_text, augmented
 
 
 @app.route("/")
@@ -100,18 +75,26 @@ def chat():
     if not chat_id or chat_id not in chat_store:
         return jsonify({"error": "Invalid chat ID."}), 400
 
-    history = chat_store[chat_id]["history"]
+    full_history = chat_store[chat_id]["history"]
+
+    # Slice history based on memory selector before passing to augmented_query
+    if memory_turns == 0:
+        chat_history = []
+    elif memory_turns == -1:
+        chat_history = full_history
+    else:
+        chat_history = full_history[-(memory_turns * 2):]
 
     try:
-        response_text, augmented = ask_RAG_with_history(
-            query, system_prompt, history, memory_turns
-        )
+        # augmented_query now accepts chat_history directly and formats it properly
+        user_prompt = augmented_query(query, chat_history)
+        response_text, _ = ask_gpt_completions(system_prompt, user_prompt, model="gpt-4.1")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-    # Store with display (original query) separate from augmented for context building
-    history.append({"role": "user", "display": query, "content": augmented})
-    history.append({"role": "assistant", "display": response_text, "content": response_text})
+    # Store as clean role/content pairs for history (original query, not augmented)
+    full_history.append({"role": "user", "content": query})
+    full_history.append({"role": "assistant", "content": response_text})
 
     # Auto-title from first user message
     if chat_store[chat_id]["title"] == "New Chat":
